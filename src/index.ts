@@ -1,5 +1,7 @@
 import express from 'express';
 import cors from 'cors';
+import { serversRouter } from './routes/servers';
+import { playersRouter } from './routes/players';
 import { statsRouter } from './routes/stats';
 
 const app = express();
@@ -10,12 +12,19 @@ app.use(express.json());
 
 // Health check
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'petablocks-stats', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    service: 'petablocks-stats',
+    timestamp: new Date().toISOString(),
+    version: '1.1.0',
+  });
 });
 
-// Routes
+// REST Routes
+app.use('/api/servers', serversRouter);
+app.use('/api/players', playersRouter);
 app.use('/api/stats', statsRouter);
 
 app.listen(PORT, () => {
-  console.log(`PETABLOCKS Stats API listening on port ${PORT}`);
+  console.log(`PETABLOCKS Stats API v1.1.0 listening on port ${PORT}`);
 });
