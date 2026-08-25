@@ -31,6 +31,8 @@ jobs:
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK }}
           status: ${{ job.status }}
+          nofail: true
+          ack_no_webhook: true
           title: "📊 Stats API Deployment"
           content: "stats.petablocks.com → ${{ job.status }}"
 
