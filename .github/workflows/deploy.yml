@@ -2,6 +2,7 @@ name: Deploy Player Stats API to PETABLOCKS-FEA
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:
