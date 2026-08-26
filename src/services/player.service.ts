@@ -3,6 +3,7 @@ import { cacheService } from './redis.service';
 
 export interface PlayerProfile {
   uuid: string;
+  dashedUuid: string;
   username: string;
   avatarUrl: string;
   headUrl: string;
@@ -25,6 +26,12 @@ export class PlayerService {
     const minutes = Math.floor((seconds % 3600) / 60);
     if (hours === 0) return `${minutes}m`;
     return `${hours}h ${minutes}m`;
+  }
+
+  private toDashedUuid(uuid: string): string {
+    const clean = uuid.replace(/-/g, '');
+    if (clean.length !== 32) return uuid;
+    return `${clean.substr(0, 8)}-${clean.substr(8, 4)}-${clean.substr(12, 4)}-${clean.substr(16, 4)}-${clean.substr(20)}`;
   }
 
   async resolveMojangUser(query: string): Promise<{ uuid: string; username: string } | null> {
@@ -65,16 +72,18 @@ export class PlayerService {
 
     // 1. Resolve Mojang UUID & Case-Correct Username
     const mojang = await this.resolveMojangUser(query);
-    const uuid = mojang ? mojang.uuid : query;
+    const rawUuid = mojang ? mojang.uuid : query;
     const username = mojang ? mojang.username : query;
+    const dashedUuid = this.toDashedUuid(rawUuid);
 
     const baseProfile: PlayerProfile = {
-      uuid,
+      uuid: rawUuid,
+      dashedUuid,
       username,
-      avatarUrl: `https://crafatar.com/avatars/${uuid}?size=128&overlay`,
-      headUrl: `https://crafatar.com/renders/head/${uuid}?overlay`,
-      bodyUrl: `https://crafatar.com/renders/body/${uuid}?overlay`,
-      skinUrl: `https://crafatar.com/skins/${uuid}`,
+      avatarUrl: `https://mc-heads.net/avatar/${rawUuid}/128`,
+      headUrl: `https://mc-heads.net/head/${rawUuid}/128`,
+      bodyUrl: `https://mc-heads.net/body/${rawUuid}/240`,
+      skinUrl: `https://mc-heads.net/download/${rawUuid}`,
       playtimeSeconds: 0,
       playtimeFormatted: '0m',
       rank: 'Player',
@@ -83,7 +92,7 @@ export class PlayerService {
     // 2. Query Plan database or LuckPerms
     try {
       const pool = getPool();
-      const cleanUuid = uuid.replace(/-/g, '');
+      const cleanUuid = rawUuid.replace(/-/g, '');
 
       // Query plan_users + plan_user_info
       let matchedRow: any = null;
@@ -105,10 +114,10 @@ export class PlayerService {
         );
         if (rows && rows.length > 0) matchedRow = rows[0];
       } catch {
-        // Fallback for alternate Plan schema (e.g. plan_sessions or direct activity)
+        // Fallback for alternate Plan schema
       }
 
-      // If playtime_ms is 0 or plan_user_info empty, check plan_sessions
+      // If playtime_ms is 0, check plan_sessions
       if (!matchedRow || !matchedRow.playtime_ms) {
         try {
           const [sessionRows]: any = await pool.query(
@@ -157,10 +166,10 @@ export class PlayerService {
           baseProfile.rank = group.charAt(0).toUpperCase() + group.slice(1);
         }
       } catch {
-        // LuckPerms table not in this DB
+        // Ignore
       }
-    } catch (err) {
-      // Database not yet configured or tables not ready
+    } catch {
+      // Database query error fallback
     }
 
     await cacheService.set(cacheKey, baseProfile, 30);
@@ -176,7 +185,6 @@ export class PlayerService {
       const pool = getPool();
       let results: any[] = [];
 
-      // Query plan_user_info
       try {
         const [rows]: any = await pool.query(
           `SELECT
@@ -199,7 +207,7 @@ export class PlayerService {
             uuid: r.uuid,
             playtimeSeconds: r.playtime_seconds,
             playtimeFormatted: this.formatPlaytime(r.playtime_seconds),
-            avatarUrl: `https://crafatar.com/avatars/${r.uuid}?size=64&overlay`,
+            avatarUrl: `https://mc-heads.net/avatar/${r.uuid}/64`,
           }));
         }
       } catch {
@@ -230,7 +238,7 @@ export class PlayerService {
               uuid: r.uuid,
               playtimeSeconds: r.playtime_seconds,
               playtimeFormatted: this.formatPlaytime(r.playtime_seconds),
-              avatarUrl: `https://crafatar.com/avatars/${r.uuid}?size=64&overlay`,
+              avatarUrl: `https://mc-heads.net/avatar/${r.uuid}/64`,
             }));
           }
         } catch {
