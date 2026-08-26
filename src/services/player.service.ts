@@ -86,71 +86,56 @@ export class PlayerService {
       skinUrl: `https://mc-heads.net/download/${rawUuid}`,
       playtimeSeconds: 0,
       playtimeFormatted: '0m',
-      rank: 'Player',
+      rank: 'Member',
     };
 
-    // 2. Query Plan database or LuckPerms
+    // 2. Query Plan tables (plan_users, plan_sessions, plan_user_info)
     try {
       const pool = getPool();
       const cleanUuid = rawUuid.replace(/-/g, '');
 
-      // Query plan_users + plan_user_info
-      let matchedRow: any = null;
+      const [rows]: any = await pool.query(
+        `SELECT
+           u.id as user_id,
+           u.uuid,
+           u.name as username,
+           COALESCE(u.registered, 0) as registered,
+           COALESCE(SUM(s.session_end - s.session_start), 0) as playtime_ms,
+           COALESCE(MAX(s.session_end), u.registered, 0) as last_seen,
+           COALESCE(SUM(s.mob_kills), 0) as total_kills,
+           COALESCE(SUM(s.deaths), 0) as total_deaths,
+           MAX(i.opped) as is_op
+         FROM plan_users u
+         LEFT JOIN plan_sessions s ON u.id = s.user_id
+         LEFT JOIN plan_user_info i ON u.id = i.user_id
+         WHERE LOWER(u.name) = LOWER(?) OR REPLACE(u.uuid, '-', '') = ?
+         GROUP BY u.id
+         LIMIT 1`,
+        [username, cleanUuid]
+      );
 
-      try {
-        const [rows]: any = await pool.query(
-          `SELECT
-             u.uuid,
-             u.name as username,
-             COALESCE(i.registered, u.registered, 0) as registered,
-             COALESCE(i.playtime, 0) as playtime_ms,
-             COALESCE(i.last_seen, 0) as last_seen
-           FROM plan_users u
-           LEFT JOIN plan_user_info i ON u.id = i.user_id
-           WHERE LOWER(u.name) = LOWER(?) OR REPLACE(u.uuid, '-', '') = ?
-           ORDER BY i.playtime DESC
-           LIMIT 1`,
-          [username, cleanUuid]
-        );
-        if (rows && rows.length > 0) matchedRow = rows[0];
-      } catch {
-        // Fallback for alternate Plan schema
-      }
-
-      // If playtime_ms is 0, check plan_sessions
-      if (!matchedRow || !matchedRow.playtime_ms) {
-        try {
-          const [sessionRows]: any = await pool.query(
-            `SELECT
-               u.uuid,
-               u.name as username,
-               COALESCE(u.registered, 0) as registered,
-               COALESCE(SUM(s.session_end - s.session_start), 0) as playtime_ms,
-               MAX(s.session_end) as last_seen
-             FROM plan_users u
-             LEFT JOIN plan_sessions s ON u.id = s.user_id
-             WHERE LOWER(u.name) = LOWER(?) OR REPLACE(u.uuid, '-', '') = ?
-             GROUP BY u.id
-             LIMIT 1`,
-            [username, cleanUuid]
-          );
-          if (sessionRows && sessionRows.length > 0 && sessionRows[0].playtime_ms) {
-            matchedRow = sessionRows[0];
-          }
-        } catch {
-          // Ignore
-        }
-      }
-
-      if (matchedRow) {
-        const playtimeSeconds = Math.floor((matchedRow.playtime_ms || 0) / 1000);
+      if (rows && rows.length > 0) {
+        const row = rows[0];
+        const playtimeSeconds = Math.floor(Math.max(0, Number(row.playtime_ms || 0)) / 1000);
         baseProfile.playtimeSeconds = playtimeSeconds;
         baseProfile.playtimeFormatted = this.formatPlaytime(playtimeSeconds);
-        if (matchedRow.registered && matchedRow.registered > 0) {
-          baseProfile.firstJoined = new Date(Number(matchedRow.registered)).toISOString();
+        baseProfile.kills = Number(row.total_kills || 0);
+        baseProfile.deaths = Number(row.total_deaths || 0);
+
+        if (baseProfile.deaths > 0) {
+          baseProfile.kdr = (baseProfile.kills / baseProfile.deaths).toFixed(2);
+        } else if (baseProfile.kills > 0) {
+          baseProfile.kdr = baseProfile.kills.toFixed(2);
         }
-        if (matchedRow.last_seen && matchedRow.last_seen > 0) {
-          baseProfile.lastSeen = new Date(Number(matchedRow.last_seen)).toISOString();
+
+        if (row.registered && Number(row.registered) > 0) {
+          baseProfile.firstJoined = new Date(Number(row.registered)).toISOString();
+        }
+        if (row.last_seen && Number(row.last_seen) > 0) {
+          baseProfile.lastSeen = new Date(Number(row.last_seen)).toISOString();
+        }
+        if (row.is_op === 1) {
+          baseProfile.rank = 'Admin';
         }
       }
 
@@ -166,7 +151,7 @@ export class PlayerService {
           baseProfile.rank = group.charAt(0).toUpperCase() + group.slice(1);
         }
       } catch {
-        // Ignore
+        // LuckPerms table not present in this DB
       }
     } catch {
       // Database query error fallback
@@ -185,68 +170,30 @@ export class PlayerService {
       const pool = getPool();
       let results: any[] = [];
 
-      try {
-        const [rows]: any = await pool.query(
-          `SELECT
-             RANK() OVER (ORDER BY COALESCE(i.playtime, 0) DESC) AS rank,
-             u.name as username,
-             u.uuid,
-             FLOOR(COALESCE(i.playtime, 0) / 1000) as playtime_seconds
-           FROM plan_users u
-           JOIN plan_user_info i ON u.id = i.user_id
-           WHERE COALESCE(i.playtime, 0) > 0
-           ORDER BY i.playtime DESC
-           LIMIT ?`,
-          [limit]
-        );
+      const [rows]: any = await pool.query(
+        `SELECT
+           RANK() OVER (ORDER BY COALESCE(SUM(s.session_end - s.session_start), 0) DESC) AS rank,
+           u.name as username,
+           u.uuid,
+           FLOOR(COALESCE(SUM(s.session_end - s.session_start), 0) / 1000) as playtime_seconds
+         FROM plan_users u
+         JOIN plan_sessions s ON u.id = s.user_id
+         GROUP BY u.id
+         HAVING playtime_seconds > 0
+         ORDER BY playtime_seconds DESC
+         LIMIT ?`,
+        [limit]
+      );
 
-        if (rows && rows.length > 0) {
-          results = rows.map((r: any) => ({
-            rank: r.rank,
-            username: r.username,
-            uuid: r.uuid,
-            playtimeSeconds: r.playtime_seconds,
-            playtimeFormatted: this.formatPlaytime(r.playtime_seconds),
-            avatarUrl: `https://mc-heads.net/avatar/${r.uuid}/64`,
-          }));
-        }
-      } catch {
-        // Fallback to plan_sessions
-      }
-
-      if (results.length === 0) {
-        try {
-          const [sessionRows]: any = await pool.query(
-            `SELECT
-               RANK() OVER (ORDER BY SUM(s.session_end - s.session_start) DESC) AS rank,
-               u.name as username,
-               u.uuid,
-               FLOOR(SUM(s.session_end - s.session_start) / 1000) as playtime_seconds
-             FROM plan_users u
-             JOIN plan_sessions s ON u.id = s.user_id
-             GROUP BY u.id
-             HAVING playtime_seconds > 0
-             ORDER BY playtime_seconds DESC
-             LIMIT ?`,
-            [limit]
-          );
-
-          if (sessionRows && sessionRows.length > 0) {
-            results = sessionRows.map((r: any) => ({
-              rank: r.rank,
-              username: r.username,
-              uuid: r.uuid,
-              playtimeSeconds: r.playtime_seconds,
-              playtimeFormatted: this.formatPlaytime(r.playtime_seconds),
-              avatarUrl: `https://mc-heads.net/avatar/${r.uuid}/64`,
-            }));
-          }
-        } catch {
-          // Ignore
-        }
-      }
-
-      if (results.length > 0) {
+      if (rows && rows.length > 0) {
+        results = rows.map((r: any) => ({
+          rank: r.rank,
+          username: r.username,
+          uuid: r.uuid,
+          playtimeSeconds: r.playtime_seconds,
+          playtimeFormatted: this.formatPlaytime(r.playtime_seconds),
+          avatarUrl: `https://mc-heads.net/avatar/${r.uuid}/64`,
+        }));
         await cacheService.set(cacheKey, results, 30);
         return results;
       }
