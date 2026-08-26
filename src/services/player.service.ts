@@ -80,51 +80,90 @@ export class PlayerService {
       rank: 'Player',
     };
 
-    // 2. Query Plan database or local player_stats if available
+    // 2. Query Plan database or LuckPerms
     try {
       const pool = getPool();
+      const cleanUuid = uuid.replace(/-/g, '');
 
-      // Check if plan_users / plan_user_info exists
-      const [rows]: any = await pool.query(
-        `SELECT
-           u.uuid,
-           u.name as username,
-           COALESCE(i.registered, 0) as registered,
-           COALESCE(i.playtime, 0) as playtime_ms,
-           COALESCE(i.last_seen, 0) as last_seen
-         FROM plan_users u
-         LEFT JOIN plan_user_info i ON u.id = i.user_id
-         WHERE u.name = ? OR u.uuid = ?
-         LIMIT 1`,
-        [username, uuid]
-      ).catch(() => [[]]);
+      // Query plan_users + plan_user_info
+      let matchedRow: any = null;
 
-      if (rows && rows.length > 0) {
-        const row = rows[0];
-        const playtimeSeconds = Math.floor((row.playtime_ms || 0) / 1000);
+      try {
+        const [rows]: any = await pool.query(
+          `SELECT
+             u.uuid,
+             u.name as username,
+             COALESCE(i.registered, u.registered, 0) as registered,
+             COALESCE(i.playtime, 0) as playtime_ms,
+             COALESCE(i.last_seen, 0) as last_seen
+           FROM plan_users u
+           LEFT JOIN plan_user_info i ON u.id = i.user_id
+           WHERE LOWER(u.name) = LOWER(?) OR REPLACE(u.uuid, '-', '') = ?
+           ORDER BY i.playtime DESC
+           LIMIT 1`,
+          [username, cleanUuid]
+        );
+        if (rows && rows.length > 0) matchedRow = rows[0];
+      } catch {
+        // Fallback for alternate Plan schema (e.g. plan_sessions or direct activity)
+      }
+
+      // If playtime_ms is 0 or plan_user_info empty, check plan_sessions
+      if (!matchedRow || !matchedRow.playtime_ms) {
+        try {
+          const [sessionRows]: any = await pool.query(
+            `SELECT
+               u.uuid,
+               u.name as username,
+               COALESCE(u.registered, 0) as registered,
+               COALESCE(SUM(s.session_end - s.session_start), 0) as playtime_ms,
+               MAX(s.session_end) as last_seen
+             FROM plan_users u
+             LEFT JOIN plan_sessions s ON u.id = s.user_id
+             WHERE LOWER(u.name) = LOWER(?) OR REPLACE(u.uuid, '-', '') = ?
+             GROUP BY u.id
+             LIMIT 1`,
+            [username, cleanUuid]
+          );
+          if (sessionRows && sessionRows.length > 0 && sessionRows[0].playtime_ms) {
+            matchedRow = sessionRows[0];
+          }
+        } catch {
+          // Ignore
+        }
+      }
+
+      if (matchedRow) {
+        const playtimeSeconds = Math.floor((matchedRow.playtime_ms || 0) / 1000);
         baseProfile.playtimeSeconds = playtimeSeconds;
         baseProfile.playtimeFormatted = this.formatPlaytime(playtimeSeconds);
-        if (row.registered) baseProfile.firstJoined = new Date(row.registered).toISOString();
-        if (row.last_seen) baseProfile.lastSeen = new Date(row.last_seen).toISOString();
+        if (matchedRow.registered && matchedRow.registered > 0) {
+          baseProfile.firstJoined = new Date(Number(matchedRow.registered)).toISOString();
+        }
+        if (matchedRow.last_seen && matchedRow.last_seen > 0) {
+          baseProfile.lastSeen = new Date(Number(matchedRow.last_seen)).toISOString();
+        }
       }
 
       // Check LuckPerms primary group
-      const [lpRows]: any = await pool.query(
-        `SELECT primary_group FROM luckperms_players WHERE username = ? OR uuid = ? LIMIT 1`,
-        [username, uuid]
-      ).catch(() => [[]]);
+      try {
+        const [lpRows]: any = await pool.query(
+          `SELECT primary_group FROM luckperms_players WHERE LOWER(username) = LOWER(?) OR REPLACE(uuid, '-', '') = ? LIMIT 1`,
+          [username, cleanUuid]
+        );
 
-      if (lpRows && lpRows.length > 0) {
-        const lp = lpRows[0];
-        if (lp.primary_group) {
-          baseProfile.rank = lp.primary_group.charAt(0).toUpperCase() + lp.primary_group.slice(1);
+        if (lpRows && lpRows.length > 0 && lpRows[0].primary_group) {
+          const group = lpRows[0].primary_group;
+          baseProfile.rank = group.charAt(0).toUpperCase() + group.slice(1);
         }
+      } catch {
+        // LuckPerms table not in this DB
       }
-    } catch {
-      // Database not yet configured or tables not ready — return profile with avatar
+    } catch (err) {
+      // Database not yet configured or tables not ready
     }
 
-    await cacheService.set(cacheKey, baseProfile, 60);
+    await cacheService.set(cacheKey, baseProfile, 30);
     return baseProfile;
   }
 
@@ -135,35 +174,76 @@ export class PlayerService {
 
     try {
       const pool = getPool();
-      // Try querying Plan leaderboard
-      const [rows]: any = await pool.query(
-        `SELECT
-           RANK() OVER (ORDER BY COALESCE(i.playtime, 0) DESC) AS rank,
-           u.name as username,
-           u.uuid,
-           FLOOR(COALESCE(i.playtime, 0) / 1000) as playtime_seconds
-         FROM plan_users u
-         JOIN plan_user_info i ON u.id = i.user_id
-         WHERE COALESCE(i.playtime, 0) > 0
-         ORDER BY i.playtime DESC
-         LIMIT ?`,
-        [limit]
-      ).catch(() => [[]]);
+      let results: any[] = [];
 
-      if (rows && rows.length > 0) {
-        const results = rows.map((r: any) => ({
-          rank: r.rank,
-          username: r.username,
-          uuid: r.uuid,
-          playtimeSeconds: r.playtime_seconds,
-          playtimeFormatted: this.formatPlaytime(r.playtime_seconds),
-          avatarUrl: `https://crafatar.com/avatars/${r.uuid}?size=64&overlay`,
-        }));
-        await cacheService.set(cacheKey, results, 60);
+      // Query plan_user_info
+      try {
+        const [rows]: any = await pool.query(
+          `SELECT
+             RANK() OVER (ORDER BY COALESCE(i.playtime, 0) DESC) AS rank,
+             u.name as username,
+             u.uuid,
+             FLOOR(COALESCE(i.playtime, 0) / 1000) as playtime_seconds
+           FROM plan_users u
+           JOIN plan_user_info i ON u.id = i.user_id
+           WHERE COALESCE(i.playtime, 0) > 0
+           ORDER BY i.playtime DESC
+           LIMIT ?`,
+          [limit]
+        );
+
+        if (rows && rows.length > 0) {
+          results = rows.map((r: any) => ({
+            rank: r.rank,
+            username: r.username,
+            uuid: r.uuid,
+            playtimeSeconds: r.playtime_seconds,
+            playtimeFormatted: this.formatPlaytime(r.playtime_seconds),
+            avatarUrl: `https://crafatar.com/avatars/${r.uuid}?size=64&overlay`,
+          }));
+        }
+      } catch {
+        // Fallback to plan_sessions
+      }
+
+      if (results.length === 0) {
+        try {
+          const [sessionRows]: any = await pool.query(
+            `SELECT
+               RANK() OVER (ORDER BY SUM(s.session_end - s.session_start) DESC) AS rank,
+               u.name as username,
+               u.uuid,
+               FLOOR(SUM(s.session_end - s.session_start) / 1000) as playtime_seconds
+             FROM plan_users u
+             JOIN plan_sessions s ON u.id = s.user_id
+             GROUP BY u.id
+             HAVING playtime_seconds > 0
+             ORDER BY playtime_seconds DESC
+             LIMIT ?`,
+            [limit]
+          );
+
+          if (sessionRows && sessionRows.length > 0) {
+            results = sessionRows.map((r: any) => ({
+              rank: r.rank,
+              username: r.username,
+              uuid: r.uuid,
+              playtimeSeconds: r.playtime_seconds,
+              playtimeFormatted: this.formatPlaytime(r.playtime_seconds),
+              avatarUrl: `https://crafatar.com/avatars/${r.uuid}?size=64&overlay`,
+            }));
+          }
+        } catch {
+          // Ignore
+        }
+      }
+
+      if (results.length > 0) {
+        await cacheService.set(cacheKey, results, 30);
         return results;
       }
     } catch {
-      // Fallback
+      // Ignore
     }
 
     return [];
