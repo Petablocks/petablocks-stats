@@ -44,7 +44,12 @@ playersRouter.get('/debug/schema', async (_req: Request, res: Response) => {
       planSessionsSample,
     });
   } catch (err: any) {
-    res.status(500).json({ error: String(err) });
+    res.json({
+      error: true,
+      errorMessage: err.message,
+      errorCode: err.code,
+      stack: err.stack,
+    });
   }
 });
 
