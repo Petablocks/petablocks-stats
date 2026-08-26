@@ -1,43 +1,23 @@
-# petablocks-stats
+# 📊 PETABLOCKS Stats API (`petablocks-stats`)
 
-Player Stats REST API for [stats.petablocks.com](https://stats.petablocks.com). Built with **Node.js + Express + TypeScript**, backed by MariaDB on PETABLOCKS-DB.
+> High-performance REST API providing real-time player statistics, lifetime leaderboards, and Minecraft skin resolution for the PETABLOCKS ecosystem.
+>
+> 🚀 **Hosted & Powered by [MDRCloud](https://mdrcloud.co.uk)** • **Version**: `v1.1.0` • **Endpoint**: `https://stats.petablocks.com`
 
-## Endpoints
+---
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/health` | Health check |
-| `GET` | `/api/stats` | Leaderboard — top 100 players by playtime |
-| `GET` | `/api/stats/:uuid` | Single player stats by UUID |
+## 🌟 Endpoints
 
-## Development
+* **`GET /api/players/:usernameOrUuid`**: Full player profile with lifetime playtime, rank, mob kills, deaths, KDR, and 3D skin CDN renders.
+* **`GET /api/players/leaderboard/playtime`**: Lifetime network playtime leaderboard sorted descending.
+* **`GET /api/server`**: Aggregate network concurrency and online player roster.
+* **`GET /api/health`**: API health check, database status, and MDRCloud hosting provider info.
+* **`GET /api/version`**: API version badge and ecosystem release metadata.
 
-```bash
-npm install
-cp .env.example .env
-# Edit .env with your local DB credentials
-npm run dev
-```
+---
 
-## Database Schema
+## 🛠️ Architecture
 
-The API expects a `player_stats` table in the `petablocks` database:
-
-```sql
-CREATE TABLE player_stats (
-  id              INT AUTO_INCREMENT PRIMARY KEY,
-  uuid            VARCHAR(36) NOT NULL UNIQUE,
-  username        VARCHAR(16) NOT NULL,
-  playtime_seconds BIGINT DEFAULT 0,
-  kills           INT DEFAULT 0,
-  deaths          INT DEFAULT 0,
-  updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
-```
-
-This table is populated by your MC stats plugin (e.g. StatsCore, Essentials, or custom plugin).
-
-## Deployment
-
-Automatically deployed to `PETABLOCKS-FEA (10.20.110.116)` via GitHub Actions on every push to `main`.
-Requires the `DISCORD_WEBHOOK` secret in repository settings.
+* **Database Engine**: MariaDB 11 on `PETABLOCKS-DB` (`10.20.110.117:3307`) querying Plan v5 tables (`plan_users`, `plan_sessions`, `plan_user_info`).
+* **Caching**: Redis on `10.20.110.117:6379` with 30s-60s TTL for fast repeated lookups.
+* **Skin Resolution**: [mc-heads.net](https://mc-heads.net) CDN + Mojang Session API.
