@@ -4,7 +4,7 @@ let pool: mysql.Pool | null = null;
 
 export function getPool(): mysql.Pool {
   if (!pool) {
-    const url = process.env.DATABASE_URL || 'mysql://petablocks:mOgsrNJ6lEQQXx77YnPcVd0jxAmQDRud@10.20.110.117:3307/petablocks';
+    const url = process.env.DATABASE_URL || 'mysql://user:password@127.0.0.1:3306/petablocks';
 
     pool = mysql.createPool({
       uri: url,
