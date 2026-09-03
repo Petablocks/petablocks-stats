@@ -89,34 +89,54 @@ export class PlayerService {
       rank: 'Member',
     };
 
-    // 2. Query Plan tables (plan_users, plan_sessions, plan_user_info)
+    // 2. Query Native Analytics tables (with fallback to Plan)
     try {
       const pool = getPool();
       const cleanUuid = rawUuid.replace(/-/g, '');
 
-      const [rows]: any = await pool.query(
+      // Check native analytics_players table first
+      let [rows]: any = await pool.query(
         `SELECT
-           u.id as user_id,
-           u.uuid,
-           u.name as username,
-           COALESCE(u.registered, 0) as registered,
-           COALESCE(SUM(s.session_end - s.session_start), 0) as playtime_ms,
-           COALESCE(MAX(s.session_end), u.registered, 0) as last_seen,
-           COALESCE(SUM(s.mob_kills), 0) as total_kills,
-           COALESCE(SUM(s.deaths), 0) as total_deaths,
-           MAX(i.opped) as is_op
-         FROM plan_users u
-         LEFT JOIN plan_sessions s ON u.id = s.user_id
-         LEFT JOIN plan_user_info i ON u.id = i.user_id
-         WHERE LOWER(u.name) = LOWER(?) OR REPLACE(u.uuid, '-', '') = ?
-         GROUP BY u.id
+           uuid,
+           username,
+           first_seen as registered,
+           FLOOR(total_playtime_ms / 1000) as playtime_seconds,
+           last_seen,
+           0 as total_kills,
+           total_deaths,
+           0 as is_op
+         FROM analytics_players
+         WHERE LOWER(username) = LOWER(?) OR uuid = ? OR REPLACE(uuid, '-', '') = ?
          LIMIT 1`,
-        [username, cleanUuid]
+        [username, dashedUuid, cleanUuid]
       );
+
+      // Fallback to plan_users if not found in analytics_players
+      if (!rows || rows.length === 0) {
+        const [planRows]: any = await pool.query(
+          `SELECT
+             u.uuid,
+             u.name as username,
+             COALESCE(u.registered, 0) as registered,
+             FLOOR(COALESCE(SUM(s.session_end - s.session_start), 0) / 1000) as playtime_seconds,
+             COALESCE(MAX(s.session_end), u.registered, 0) as last_seen,
+             COALESCE(SUM(s.mob_kills), 0) as total_kills,
+             COALESCE(SUM(s.deaths), 0) as total_deaths,
+             MAX(i.opped) as is_op
+           FROM plan_users u
+           LEFT JOIN plan_sessions s ON u.id = s.user_id
+           LEFT JOIN plan_user_info i ON u.id = i.user_id
+           WHERE LOWER(u.name) = LOWER(?) OR REPLACE(u.uuid, '-', '') = ?
+           GROUP BY u.id
+           LIMIT 1`,
+          [username, cleanUuid]
+        );
+        rows = planRows;
+      }
 
       if (rows && rows.length > 0) {
         const row = rows[0];
-        const playtimeSeconds = Math.floor(Math.max(0, Number(row.playtime_ms || 0)) / 1000);
+        const playtimeSeconds = Math.max(0, Number(row.playtime_seconds || 0));
         baseProfile.playtimeSeconds = playtimeSeconds;
         baseProfile.playtimeFormatted = this.formatPlaytime(playtimeSeconds);
         baseProfile.kills = Number(row.total_kills || 0);
