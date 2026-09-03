@@ -3,6 +3,7 @@ import cors from 'cors';
 import { serversRouter } from './routes/servers';
 import { playersRouter } from './routes/players';
 import { statsRouter } from './routes/stats';
+import { maintenanceRouter } from './routes/maintenance';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -43,6 +44,7 @@ app.get('/api/version', (_req, res) => {
 app.use('/api/servers', serversRouter);
 app.use('/api/players', playersRouter);
 app.use('/api/stats', statsRouter);
+app.use('/api/maintenance', maintenanceRouter);
 
 app.listen(PORT, () => {
   console.log(`PETABLOCKS Stats API v1.2.0 (Powered by MDRCloud) listening on port ${PORT}`);
